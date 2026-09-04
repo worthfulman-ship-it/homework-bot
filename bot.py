@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 from datetime import date, datetime, time as dtime
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import discord
 from discord import app_commands
@@ -223,6 +225,30 @@ async def before_daily_ping():
     await bot.wait_until_ready()
 
 
+# ---------- Render port-scan workaround ----------
+# Render's Web Service type expects something bound to $PORT and will kill
+# the process if nothing answers. This bot only makes outbound connections
+# (Discord gateway + Drive API), so we run a trivial HTTP server on a
+# background thread just to satisfy the port scan. UptimeRobot pings this
+# same endpoint to prevent cold starts. Same fix as Hydra.
+
+class _HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def log_message(self, *args):
+        pass  # keep Render logs quiet
+
+
+def _run_health_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), _HealthCheckHandler)
+    print(f"[health] listening on 0.0.0.0:{port}")
+    server.serve_forever()
+
+
 # ---------- lifecycle ----------
 
 @bot.event
@@ -252,4 +278,5 @@ async def _run_with_backoff():
 if __name__ == "__main__":
     if not TOKEN:
         raise SystemExit("DISCORD_BOT_TOKEN is not set.")
+    threading.Thread(target=_run_health_server, daemon=True).start()
     asyncio.run(_run_with_backoff())

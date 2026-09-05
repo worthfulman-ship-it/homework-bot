@@ -33,6 +33,7 @@ import os
 import threading
 from datetime import date, datetime, time as dtime
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from zoneinfo import ZoneInfo
 
 import discord
 from discord import app_commands
@@ -42,8 +43,9 @@ import store
 from calc import SEVERITY_PRESETS, Task, order_tasks, due_today, is_overdue, days_overdue, days_until_due
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-PING_HOUR_IST = 16  # 4pm IST, matching the attendance bot's evening check-in slot
-PING_MINUTE_IST = 30
+IST = ZoneInfo("Asia/Kolkata")
+PING_HOUR_IST = 17  # 5pm IST
+PING_MINUTE_IST = 0
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -193,7 +195,7 @@ async def hw_weight(interaction: discord.Interaction, alpha: float):
 
 # ---------- daily ping ----------
 
-@tasks.loop(time=dtime(hour=PING_HOUR_IST, minute=PING_MINUTE_IST))
+@tasks.loop(time=dtime(hour=PING_HOUR_IST, minute=PING_MINUTE_IST, tzinfo=IST))
 async def daily_ping():
     today = date.today()
     for user_id in store.all_user_ids():
@@ -237,6 +239,10 @@ class _HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"ok")
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
 
     def log_message(self, *args):
         pass  # keep Render logs quiet

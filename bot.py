@@ -6,7 +6,11 @@ commands for manual entry/logging, a daily DM ping showing what's due
 today with a button to expand into the full priority-ordered list.
 
 Commands:
-  /hw-add <subject> <title> <due_date YYYY-MM-DD> <length>
+  /hw-add <subject> <title> <due_date> <length>
+                                  — due_date accepts natural phrases
+                                    ("next thursday", "tomorrow", "fri",
+                                    "in 5 days") as well as YYYY-MM-DD;
+                                    see date_parse.py
   /hw-list                       — full open-task list, priority ordered
   /hw-done <task_id>             — mark complete, moves to log
   /hw-log                        — completed homework history
@@ -41,6 +45,7 @@ from discord.ext import commands, tasks
 
 import store
 from calc import SEVERITY_PRESETS, Task, order_tasks, due_today, is_overdue, days_overdue, days_until_due
+from date_parse import parse_due_date
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 IST = ZoneInfo("Asia/Kolkata")
@@ -110,14 +115,17 @@ class ExpandView(discord.ui.View):
 @app_commands.describe(
     subject="Subject/class",
     title="Short description of the task",
-    due_date="Due date, YYYY-MM-DD",
+    due_date="e.g. 'next thursday', 'tomorrow', 'fri', 'in 5 days', or 2026-09-10",
     length="Length — number of sub-items or pages",
 )
 async def hw_add(interaction: discord.Interaction, subject: str, title: str, due_date: str, length: int):
-    try:
-        due = date.fromisoformat(due_date)
-    except ValueError:
-        await interaction.response.send_message("Due date must be YYYY-MM-DD.", ephemeral=True)
+    due = parse_due_date(due_date)
+    if due is None:
+        await interaction.response.send_message(
+            "Couldn't understand that due date. Try things like `next thursday`, "
+            "`tomorrow`, `fri`, `in 5 days`, or `2026-09-10`.",
+            ephemeral=True,
+        )
         return
 
     task = Task(

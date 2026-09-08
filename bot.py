@@ -35,7 +35,7 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
-from datetime import date, datetime, time as dtime
+from datetime import date, datetime, time as dtime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from zoneinfo import ZoneInfo
 
@@ -59,18 +59,22 @@ tree = bot.tree
 
 # ---------- formatting helpers ----------
 
-def _task_line(t: Task, today: date) -> str:
-    if is_overdue(t, today):
-        flag = f"⚠️ {days_overdue(t, today)}d overdue"
-    else:
-        d = days_until_due(t, today)
-        flag = "due today" if d == 0 else f"due in {d}d"
+def _task_line(t: Task, today: date, show_flag: bool = True) -> str:
     sev = ""
     if t.severity_override is not None:
         for label, val in SEVERITY_PRESETS.items():
             if val == t.severity_override:
                 sev = f", severity: {label}"
                 break
+
+    if not show_flag:
+        return f"`{t.id}` **{t.subject}** — {t.title} ({t.length} items{sev})"
+
+    if is_overdue(t, today):
+        flag = f"⚠️ {days_overdue(t, today)}d overdue"
+    else:
+        d = days_until_due(t, today)
+        flag = "due today" if d == 0 else f"due in {d}d"
     return f"`{t.id}` **{t.subject}** — {t.title} ({t.length} items, {flag}{sev})"
 
 
@@ -206,6 +210,7 @@ async def hw_weight(interaction: discord.Interaction, alpha: float):
 @tasks.loop(time=dtime(hour=PING_HOUR_IST, minute=PING_MINUTE_IST, tzinfo=IST))
 async def daily_ping():
     today = date.today()
+    tomorrow = today + timedelta(days=1)
     for user_id in store.all_user_ids():
         try:
             user = await bot.fetch_user(int(user_id))
@@ -213,12 +218,12 @@ async def daily_ping():
             print(f"[ping] couldn't fetch user {user_id}: {e}")
             continue
 
-        todays = due_today(store.get_tasks(user_id), today=today)
-        embed = discord.Embed(title="Due today", color=0xFEE75C)
-        if todays:
-            embed.description = "\n".join(_task_line(t, today) for t in todays)
+        tomorrows = due_today(store.get_tasks(user_id), today=tomorrow)
+        embed = discord.Embed(title="Due tomorrow", color=0xFEE75C)
+        if tomorrows:
+            embed.description = "\n".join(_task_line(t, today, show_flag=False) for t in tomorrows)
         else:
-            embed.description = "Nothing due today."
+            embed.description = "Nothing due tomorrow."
 
         overdue_count = sum(1 for t in store.get_tasks(user_id) if is_overdue(t, today))
         if overdue_count:

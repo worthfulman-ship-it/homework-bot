@@ -280,7 +280,15 @@ async def on_ready():
 
 async def _run_with_backoff():
     """Exponential backoff around bot.start(), ported from the fix used on
-    Hydra after its Cloudflare 1015 incident."""
+    Hydra after its Cloudflare 1015 incident.
+
+    Auth-type failures (bad/regenerated token, missing privileged intents)
+    are NOT retried — they will never resolve on their own, and retrying
+    them forever just makes the bot look "up" (health-check thread keeps
+    answering 200) while the Discord connection stays permanently dead
+    with no signal to Render or UptimeRobot that anything is wrong. Those
+    now crash the process so Render marks the deploy as failing and you
+    find out immediately instead of discovering it hours later."""
     delay = 5
     max_delay = 300
     while True:
@@ -288,6 +296,9 @@ async def _run_with_backoff():
             async with bot:
                 await bot.start(TOKEN)
             break  # clean shutdown
+        except (discord.LoginFailure, discord.PrivilegedIntentsRequired) as e:
+            print(f"[bot] FATAL: {e} — not retrying, check DISCORD_BOT_TOKEN / intents.")
+            raise SystemExit(1)
         except Exception as e:
             print(f"[bot] crashed: {e} — retrying in {delay}s")
             await asyncio.sleep(delay)

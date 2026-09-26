@@ -290,7 +290,7 @@ async def _run_with_backoff():
     now crash the process so Render marks the deploy as failing and you
     find out immediately instead of discovering it hours later."""
     delay = 5
-    max_delay = 300
+    max_delay = 1800
     while True:
         try:
             async with bot:

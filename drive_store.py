@@ -53,9 +53,24 @@ elsewhere in this project.
 import io
 import os
 
+# Import everything Drive needs HERE, in the main thread, at module load.
+# googleapiclient's build() lazily imports googleapiclient.discovery_cache,
+# and if that first import happens on a background thread while gunicorn
+# forks a worker (--preload), the worker inherits that module's import lock
+# in a held state and its own import deadlocks forever. Importing eagerly
+# means no import is ever in flight when a thread starts or a fork happens.
+import google_auth_httplib2
+import googleapiclient.discovery_cache
+import googleapiclient.errors
+import httplib2
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+
+try:  # also trigger anything discovery_cache loads lazily
+    googleapiclient.discovery_cache.get_static_doc("drive", "v3")
+except Exception:
+    pass
 
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 TOKEN_URI = "https://oauth2.googleapis.com/token"
@@ -74,9 +89,6 @@ _folder_cache: dict[str, str] = {}  # subfolder name -> id, memoized per process
 def _get_service():
     global _service
     if _service is None:
-        import google_auth_httplib2
-        import httplib2
-
         creds = Credentials(
             token=None,
             refresh_token=REFRESH_TOKEN,

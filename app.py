@@ -397,7 +397,9 @@ def cron(job: str):
 
 @app.get("/")
 def health():
-    return "ok"
+    return f"ok ready={store.is_ready()} err={store.last_error()!r}"
 
+
+store.kick_warm()
 
 store.kick_warm()

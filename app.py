@@ -407,7 +407,6 @@ def health():
         f"ready={store.is_ready()} warming={store._warming} err={store.last_error()!r}"
     )
 
-import traceback
 
 
 @app.get("/debug/stacks")
@@ -421,5 +420,11 @@ def debug_stacks():
         out.append("".join(traceback.format_stack(frame)))
     return "\n".join(out), 200, {"Content-Type": "text/plain"}
 
-
 store.kick_warm()
+
+if hasattr(os, "register_at_fork"):
+    def _restart_warm_in_child():
+        store._warming = False
+        store.kick_warm()
+
+    os.register_at_fork(after_in_child=_restart_warm_in_child)

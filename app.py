@@ -33,6 +33,7 @@ import os
 import sys
 import threading
 import time
+import traceback
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -44,8 +45,6 @@ from nacl.signing import VerifyKey
 import store
 from calc import SEVERITY_PRESETS, Task, days_overdue, days_until_due, due_today, is_overdue, order_tasks
 from date_parse import parse_due_date
-
-import traceback
 
 # Under gunicorn stdout is a pipe, so print() is block-buffered and log lines
 # can be delayed or never appear. Flush every line.
@@ -408,7 +407,7 @@ def health():
     )
 
 
-
+# TEMPORARY diagnostic: remove once everything works.
 @app.get("/debug/stacks")
 def debug_stacks():
     if not CRON_KEY or not hmac.compare_digest(request.args.get("key", ""), CRON_KEY):
@@ -420,11 +419,5 @@ def debug_stacks():
         out.append("".join(traceback.format_stack(frame)))
     return "\n".join(out), 200, {"Content-Type": "text/plain"}
 
+
 store.kick_warm()
-
-if hasattr(os, "register_at_fork"):
-    def _restart_warm_in_child():
-        store._warming = False
-        store.kick_warm()
-
-    os.register_at_fork(after_in_child=_restart_warm_in_child)

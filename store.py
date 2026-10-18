@@ -43,6 +43,7 @@ import functools
 import json
 import threading
 import time
+import traceback
 import uuid
 from datetime import datetime, timezone
 
@@ -71,6 +72,7 @@ _pending: list = []               # [(gen, event)] applied but not yet journaled
 _journal_files: list = []         # [(max_key, drive_file_id)] not yet folded
 _force_compact = False
 _warming = False
+_last_error = ""                # why the last load attempt failed ("" = none)
 _dirty = threading.Event()        # wakes the journal writer
 _compact_evt = threading.Event()  # wakes the compactor
 
@@ -207,13 +209,20 @@ def _ensure_loaded() -> dict:
         return _state
 
 
+def last_error() -> str:
+    return _last_error
+
+
 def warm() -> None:
+    global _last_error
     for attempt in range(5):
         try:
             _ensure_loaded()
+            _last_error = ""
             print("[store] state loaded")
             return
         except StorageUnavailable as e:
+            _last_error = str(e)
             print(f"[store] warm-up attempt {attempt + 1} failed: {e}")
             time.sleep(5)
 
@@ -228,10 +237,14 @@ def kick_warm() -> None:
 
     def run():
         global _warming
+        global _last_error
         try:
             warm()
             if is_ready() and drive_store.DRIVE_ENABLED:
                 drive_journal.prewarm()  # build per-thread services before a hedge needs them
+        except Exception as e:  # anything unexpected: surface it instead of dying silently
+            _last_error = repr(e)
+            traceback.print_exc()
         finally:
             _warming = False
 

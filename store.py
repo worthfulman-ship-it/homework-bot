@@ -41,6 +41,7 @@ from __future__ import annotations
 import atexit
 import functools
 import json
+import os
 import threading
 import time
 import traceback
@@ -72,6 +73,7 @@ _pending: list = []               # [(gen, event)] applied but not yet journaled
 _journal_files: list = []         # [(max_key, drive_file_id)] not yet folded
 _force_compact = False
 _warming = False
+_retired = False                  # True in a preloading master: never touch Drive
 _last_error = ""                # why the last load attempt failed ("" = none)
 _dirty = threading.Event()        # wakes the journal writer
 _compact_evt = threading.Event()  # wakes the compactor
@@ -305,6 +307,8 @@ def _compact() -> None:
     Runs on its own thread so a slow snapshot upload can never delay a
     journal write."""
     global _force_compact
+    if _retired:
+        return
     with LOCK:
         if _state is None or not _journaling():
             return
@@ -316,6 +320,9 @@ def _compact() -> None:
         ).encode("utf-8")
         _force_compact = False
     if not _snap_lock.acquire(blocking=False):
+        return
+    if _retired:
+        _snap_lock.release()
         return
     try:
         if not drive_store.upload_bytes(FILE_NAME, snap, _folder_id, mime_type="application/json"):
@@ -455,3 +462,58 @@ def get_last_ping(user_id: str) -> str | None:
 def set_last_ping(user_id: str, day_iso: str) -> None:
     _user_record(user_id)
     _record({"op": "ping", "uid": user_id, "day": day_iso})
+
+
+# ---------- fork safety (only matters if gunicorn preloads the app) ----------
+
+def _retire_before_fork() -> None:
+    """Master, just before forking a worker: stop its compactor from touching
+    Drive (it could overwrite the worker's newer snapshot), and wait for any
+    compaction already in progress."""
+    global _retired
+    _retired = True
+    _snap_lock.acquire()
+    _snap_lock.release()
+
+
+def _reinit_in_child() -> None:
+    """Worker, right after fork: threads didn't survive, and locks may have
+    been copied in a held state. Rebuild every primitive and all state, then
+    start our own threads and a fresh load."""
+    global LOCK, _load_lock, _upload_lock, _snap_lock, _cv, _warm_guard
+    global _dirty, _compact_evt
+    global _state, _folder_id, _gen, _flushed_gen, _last_key, _pending
+    global _journal_files, _force_compact, _warming, _last_error, _retired
+
+    LOCK = threading.RLock()
+    _load_lock = threading.Lock()
+    _upload_lock = threading.Lock()
+    _snap_lock = threading.Lock()
+    _cv = threading.Condition()
+    _warm_guard = threading.Lock()
+    _dirty = threading.Event()
+    _compact_evt = threading.Event()
+
+    _state = None
+    _folder_id = None
+    _gen = 0
+    _flushed_gen = 0
+    _last_key = (0, "")
+    _pending = []
+    _journal_files = []
+    _force_compact = False
+    _warming = False
+    _last_error = ""
+    _retired = False
+
+    drive_store._service = None          # don't share the parent's sockets
+    drive_store._folder_cache.clear()
+    drive_journal.reinit_after_fork()
+
+    threading.Thread(target=_writer_loop, daemon=True, name="store-writer").start()
+    threading.Thread(target=_compactor_loop, daemon=True, name="store-compactor").start()
+    kick_warm()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(before=_retire_before_fork, after_in_child=_reinit_in_child)

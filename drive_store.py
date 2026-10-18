@@ -74,6 +74,9 @@ _folder_cache: dict[str, str] = {}  # subfolder name -> id, memoized per process
 def _get_service():
     global _service
     if _service is None:
+        import google_auth_httplib2
+        import httplib2
+
         creds = Credentials(
             token=None,
             refresh_token=REFRESH_TOKEN,
@@ -83,7 +86,8 @@ def _get_service():
             scopes=SCOPES,
         )
         print('[Drive] building service')
-        _service = build("drive", "v3", credentials=creds, cache_discovery=False)
+        http = google_auth_httplib2.AuthorizedHttp(creds, http=httplib2.Http(timeout=15))
+        _service = build("drive", "v3", http=http, cache_discovery=False)
     return _service
 
 

@@ -406,18 +406,4 @@ def health():
         f"ready={store.is_ready()} warming={store._warming} err={store.last_error()!r}"
     )
 
-
-# TEMPORARY diagnostic: remove once everything works.
-@app.get("/debug/stacks")
-def debug_stacks():
-    if not CRON_KEY or not hmac.compare_digest(request.args.get("key", ""), CRON_KEY):
-        return "forbidden", 403
-    names = {t.ident: t.name for t in threading.enumerate()}
-    out = []
-    for tid, frame in sys._current_frames().items():
-        out.append(f"--- {names.get(tid, tid)} ---")
-        out.append("".join(traceback.format_stack(frame)))
-    return "\n".join(out), 200, {"Content-Type": "text/plain"}
-
-
 store.kick_warm()

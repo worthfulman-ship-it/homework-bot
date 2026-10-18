@@ -401,9 +401,9 @@ START = time.time()
 
 @app.get("/")
 def health():
+    store.kick_warm()
     return (
         f"ok pid={os.getpid()} up={int(time.time() - START)}s "
         f"ready={store.is_ready()} warming={store._warming} err={store.last_error()!r}"
     )
 
-store.kick_warm()

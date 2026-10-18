@@ -395,11 +395,13 @@ def cron(job: str):
         return "error (logged)", 200
 
 
+START = time.time()
+
+
 @app.get("/")
 def health():
-    return f"ok ready={store.is_ready()} err={store.last_error()!r}"
-
-
-store.kick_warm()
-
+    return (
+        f"ok pid={os.getpid()} up={int(time.time() - START)}s "
+        f"ready={store.is_ready()} warming={store._warming} err={store.last_error()!r}"
+    )
 store.kick_warm()

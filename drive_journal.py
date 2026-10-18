@@ -156,3 +156,11 @@ def delete_many(file_ids: list[str]) -> None:
         except Exception as e:
             print(f"[journal] delete error for {fid}: {e}")
     list(_pool.map(rm, file_ids))
+
+
+def reinit_after_fork() -> None:
+    """Child process after fork: the parent's pool threads and per-thread
+    Drive services don't exist here, so start fresh."""
+    global _pool, _tl
+    _pool = ThreadPoolExecutor(max_workers=6, thread_name_prefix="drive-j")
+    _tl = threading.local()

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hmac
 import os
+import sys
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
@@ -43,6 +44,11 @@ from nacl.signing import VerifyKey
 import store
 from calc import SEVERITY_PRESETS, Task, days_overdue, days_until_due, due_today, is_overdue, order_tasks
 from date_parse import parse_due_date
+
+# Under gunicorn stdout is a pipe, so print() is block-buffered and log lines
+# can be delayed or never appear. Flush every line.
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
 
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
 PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
@@ -242,6 +248,9 @@ def interactions():
         # Cold start: state is still loading from Drive. Answer instantly
         # instead of blocking past Discord's 3s window.
         store.kick_warm()
+        err = store.last_error()
+        if err:
+            return jsonify(_msg(f"Storage isn't loading: {err}. Check the Render logs for [store]/[journal]/[Drive] lines."))
         return jsonify(_msg("Waking up — give it a few seconds and try again."))
 
     try:

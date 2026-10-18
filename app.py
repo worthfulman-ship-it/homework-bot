@@ -45,6 +45,8 @@ import store
 from calc import SEVERITY_PRESETS, Task, days_overdue, days_until_due, due_today, is_overdue, order_tasks
 from date_parse import parse_due_date
 
+import traceback
+
 # Under gunicorn stdout is a pipe, so print() is block-buffered and log lines
 # can be delayed or never appear. Flush every line.
 sys.stdout.reconfigure(line_buffering=True)
@@ -404,4 +406,20 @@ def health():
         f"ok pid={os.getpid()} up={int(time.time() - START)}s "
         f"ready={store.is_ready()} warming={store._warming} err={store.last_error()!r}"
     )
+
+import traceback
+
+
+@app.get("/debug/stacks")
+def debug_stacks():
+    if not CRON_KEY or not hmac.compare_digest(request.args.get("key", ""), CRON_KEY):
+        return "forbidden", 403
+    names = {t.ident: t.name for t in threading.enumerate()}
+    out = []
+    for tid, frame in sys._current_frames().items():
+        out.append(f"--- {names.get(tid, tid)} ---")
+        out.append("".join(traceback.format_stack(frame)))
+    return "\n".join(out), 200, {"Content-Type": "text/plain"}
+
+
 store.kick_warm()

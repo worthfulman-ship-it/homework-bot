@@ -60,6 +60,10 @@ PING_HOUR_IST = 17  # 5pm IST
 API = "https://discord.com/api/v10"
 USER_AGENT = "DiscordBot (https://github.com/homework-bot, 1.0)"
 
+# Discord error code: "Cannot send messages to this user" (DMs closed, no
+# shared server, or the user blocked the bot). Permanent, so don't retry.
+CANNOT_DM_USER = 50007
+
 app = Flask(__name__)
 _verify_key = VerifyKey(bytes.fromhex(PUBLIC_KEY)) if PUBLIC_KEY else None
 
@@ -292,10 +296,15 @@ def interactions():
 _ping_lock = threading.Lock()
 _cooldown_until = 0.0
 _dm_channels: dict[str, str] = {}
+# uid -> IST day (iso) on which Discord said we can't DM them. In memory only:
+# a restart gives that user one more attempt, which is harmless.
+_undeliverable: dict[str, str] = {}
 
 
 class DiscordError(Exception):
-    pass
+    def __init__(self, msg: str, code: int | None = None):
+        super().__init__(msg)
+        self.code = code  # Discord's JSON error code, e.g. 50007
 
 
 def _discord(method: str, path: str, **kw):
@@ -318,7 +327,7 @@ def _discord(method: str, path: str, **kw):
         _cooldown_until = time.time() + max(5.0, float(r.json().get("retry_after", 5)))
         raise DiscordError("rate limited")
     if r.status_code >= 400:
-        raise DiscordError(f"{r.status_code}: {r.text[:200]}")
+        raise DiscordError(f"{r.status_code}: {r.text[:200]}", r.json().get("code"))
     return r.json()
 
 
@@ -364,9 +373,17 @@ def run_ping_job() -> str:
         for uid in store.all_user_ids():
             if store.get_last_ping(uid) == today.isoformat():
                 continue
+            if _undeliverable.get(uid) == today.isoformat():
+                continue  # Discord already told us we can't DM them today
             try:
                 _send_ping(uid, today)
             except Exception as e:
+                if getattr(e, "code", None) == CANNOT_DM_USER:
+                    # Permanent (DMs closed / no shared server / blocked).
+                    # Stop retrying every 5 minutes; try again tomorrow.
+                    print(f"[ping] {uid} has DMs closed, skipping for today")
+                    _undeliverable[uid] = today.isoformat()
+                    continue
                 # Not recorded as sent, so the next 5-minute tick retries it.
                 print(f"[ping] {uid} failed: {e}")
                 if time.time() < _cooldown_until:
@@ -401,9 +418,23 @@ START = time.time()
 
 @app.get("/")
 def health():
-    store.kick_warm()
     return (
         f"ok pid={os.getpid()} up={int(time.time() - START)}s "
         f"ready={store.is_ready()} warming={store._warming} err={store.last_error()!r}"
     )
 
+
+# TEMPORARY diagnostic: remove once everything works.
+@app.get("/debug/stacks")
+def debug_stacks():
+    if not CRON_KEY or not hmac.compare_digest(request.args.get("key", ""), CRON_KEY):
+        return "forbidden", 403
+    names = {t.ident: t.name for t in threading.enumerate()}
+    out = []
+    for tid, frame in sys._current_frames().items():
+        out.append(f"--- {names.get(tid, tid)} ---")
+        out.append("".join(traceback.format_stack(frame)))
+    return "\n".join(out), 200, {"Content-Type": "text/plain"}
+
+
+store.kick_warm()

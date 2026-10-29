@@ -26,7 +26,10 @@ Other guarantees kept from before:
     returns False, tell the user the write isn't confirmed yet;
   * a failed or unreadable load raises StorageUnavailable instead of
     starting empty (which would overwrite real history);
-  * is_ready()/kick_warm() let handlers answer instantly during cold start.
+  * is_ready()/kick_warm() let handlers answer instantly during cold start;
+  * a watchdog exits the process if the warm-up load is stuck for longer
+    than WARM_STUCK_S, so the host restarts it instead of the bot sitting
+    in "Waking up" indefinitely.
 
 Snapshot shape (homework_tasks.json):
 {
@@ -56,6 +59,10 @@ FILE_NAME = "homework_tasks.json"
 DEFAULT_ALPHA = 0.5
 COMPACT_AT = 12          # fold the journal into the snapshot at this many files
 WRITER_RETRY_S = 5
+# Generous on purpose: warm() makes up to 5 attempts, each several Drive
+# calls with their own timeouts, so a slow-but-progressing load can take a
+# few minutes. This only needs to catch a load that's hung for good.
+WARM_STUCK_S = 600
 
 LOCK = threading.RLock()          # guards _state, _pending, counters
 _load_lock = threading.Lock()     # serializes the Drive load only
@@ -73,6 +80,7 @@ _pending: list = []               # [(gen, event)] applied but not yet journaled
 _journal_files: list = []         # [(max_key, drive_file_id)] not yet folded
 _force_compact = False
 _warming = False
+_warm_started = 0.0               # monotonic time the current warm-up began
 _retired = False                  # True in a preloading master: never touch Drive
 _last_error = ""                # why the last load attempt failed ("" = none)
 _dirty = threading.Event()        # wakes the journal writer
@@ -231,11 +239,12 @@ def warm() -> None:
 
 def kick_warm() -> None:
     """Start a background load if needed; returns immediately (handler-safe)."""
-    global _warming
+    global _warming, _warm_started
     with _warm_guard:
         if _warming or _state is not None:
             return
         _warming = True
+        _warm_started = time.monotonic()
 
     def run():
         global _warming
@@ -251,6 +260,19 @@ def kick_warm() -> None:
             _warming = False
 
     threading.Thread(target=run, daemon=True, name="store-warm").start()
+
+
+def _watchdog_loop() -> None:
+    """If the warm-up has been 'in progress' for WARM_STUCK_S without state
+    ever loading, a Drive call is hung (it neither returned nor raised, so
+    last_error stays empty and every command answers 'Waking up' forever).
+    kick_warm() can't recover that — _warming stays True and _load_lock stays
+    held — so exit and let the host restart the process."""
+    while True:
+        time.sleep(10)
+        if _state is None and _warming and time.monotonic() - _warm_started > WARM_STUCK_S:
+            print(f"[store] warm-up stuck for >{WARM_STUCK_S}s, exiting so the host restarts")
+            os._exit(1)
 
 
 # ---------- durable writes ----------
@@ -378,6 +400,7 @@ def flush() -> None:
 
 threading.Thread(target=_writer_loop, daemon=True, name="store-writer").start()
 threading.Thread(target=_compactor_loop, daemon=True, name="store-compactor").start()
+threading.Thread(target=_watchdog_loop, daemon=True, name="store-watchdog").start()
 atexit.register(flush)
 
 
@@ -483,7 +506,7 @@ def _reinit_in_child() -> None:
     global LOCK, _load_lock, _upload_lock, _snap_lock, _cv, _warm_guard
     global _dirty, _compact_evt
     global _state, _folder_id, _gen, _flushed_gen, _last_key, _pending
-    global _journal_files, _force_compact, _warming, _last_error, _retired
+    global _journal_files, _force_compact, _warming, _warm_started, _last_error, _retired
 
     LOCK = threading.RLock()
     _load_lock = threading.Lock()
@@ -503,6 +526,7 @@ def _reinit_in_child() -> None:
     _journal_files = []
     _force_compact = False
     _warming = False
+    _warm_started = 0.0
     _last_error = ""
     _retired = False
 
@@ -512,6 +536,7 @@ def _reinit_in_child() -> None:
 
     threading.Thread(target=_writer_loop, daemon=True, name="store-writer").start()
     threading.Thread(target=_compactor_loop, daemon=True, name="store-compactor").start()
+    threading.Thread(target=_watchdog_loop, daemon=True, name="store-watchdog").start()
     kick_warm()
 
 

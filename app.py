@@ -34,7 +34,7 @@ import sys
 import threading
 import time
 import traceback
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 import requests
@@ -43,7 +43,7 @@ from nacl.exceptions import BadSignatureError
 from nacl.signing import VerifyKey
 
 import store
-from calc import SEVERITY_PRESETS, Task, days_overdue, days_until_due, due_today, is_overdue, order_tasks
+from calc import SEVERITY_PRESETS, Task, days_overdue, days_until_due, is_overdue, order_tasks
 from date_parse import parse_due_date
 
 # Under gunicorn stdout is a pipe, so print() is block-buffered and log lines
@@ -56,6 +56,7 @@ PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
 CRON_KEY = os.getenv("CRON_KEY")
 IST = ZoneInfo("Asia/Kolkata")
 PING_HOUR_IST = 17  # 5pm IST
+ALERT_WITHIN_DAYS = 2  # daily DM adds an alert embed for tasks due in <= this many days
 
 API = "https://discord.com/api/v10"
 USER_AGENT = "DiscordBot (https://github.com/homework-bot, 1.0)"
@@ -332,19 +333,24 @@ def _discord(method: str, path: str, **kw):
 
 
 def _ping_payload(uid: str, today: date) -> dict:
-    tomorrow = today + timedelta(days=1)
-    tasks_ = store.get_tasks(uid)
-    tomorrows = due_today(tasks_, today=tomorrow)
-    embed: dict = {"title": "Due tomorrow", "color": 0xFEE75C}
-    if tomorrows:
-        embed["description"] = _fit([_task_line(t, today, show_flag=False) for t in tomorrows], 4000)
-    else:
-        embed["description"] = "Nothing due tomorrow."
-    overdue_count = sum(1 for t in tasks_ if is_overdue(t, today))
-    if overdue_count:
-        embed["footer"] = {"text": f"⚠️ {overdue_count} task(s) overdue — check /hw-list"}
-    button = {"type": 2, "style": 2, "label": "View all open tasks", "custom_id": "expand"}
-    return {"embeds": [embed], "components": [{"type": 1, "components": [button]}]}
+    """Daily DM: the full priority-ordered homework list, preceded by an
+    alert embed if anything is due within ALERT_WITHIN_DAYS (overdue
+    included). One message, so the alert and the list always arrive together."""
+    open_tasks = store.get_tasks(uid)
+    urgent = sorted(
+        (t for t in open_tasks if days_until_due(t, today) <= ALERT_WITHIN_DAYS),
+        key=lambda t: (t.due_date, -t.length),
+    )
+
+    embeds = []
+    if urgent:
+        embeds.append({
+            "title": f"🚨 Due within {ALERT_WITHIN_DAYS} days ({len(urgent)})",
+            "description": _fit([_task_line(t, today) for t in urgent], 3000),
+            "color": 0xED4245,
+        })
+    embeds.append(_list_embed(uid, "Your homework", today))
+    return {"embeds": embeds}
 
 
 def _send_ping(uid: str, today: date) -> None:

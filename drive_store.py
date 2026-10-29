@@ -48,32 +48,25 @@ function here catches broadly and fails soft rather than raising, so a
 Drive outage degrades the caller to "local-only for this run," never a
 crash. Same fallback philosophy as the Xpoz -> Instaloader adapter switch
 elsewhere in this project.
+
+HTTP TIMEOUT
+------------
+The service is built with an explicit socket timeout (HTTP_TIMEOUT_S).
+Without one, a stalled connection or token refresh blocks forever instead
+of raising, which the "catch broadly, fail soft" handlers below can never
+see — so a hang looked like an endless cold start rather than an error.
 """
 
 import io
 import os
 
-# Import everything Drive needs HERE, in the main thread, at module load.
-# googleapiclient's build() lazily imports googleapiclient.discovery_cache,
-# and if that first import happens on a background thread while gunicorn
-# forks a worker (--preload), the worker inherits that module's import lock
-# in a held state and its own import deadlocks forever. Importing eagerly
-# means no import is ever in flight when a thread starts or a fork happens.
-import google_auth_httplib2
-import googleapiclient.discovery_cache
-import googleapiclient.errors
-import httplib2
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
-try:  # also trigger anything discovery_cache loads lazily
-    googleapiclient.discovery_cache.get_static_doc("drive", "v3")
-except Exception:
-    pass
-
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 TOKEN_URI = "https://oauth2.googleapis.com/token"
+HTTP_TIMEOUT_S = 15
 
 CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID")
 CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET")
@@ -89,6 +82,9 @@ _folder_cache: dict[str, str] = {}  # subfolder name -> id, memoized per process
 def _get_service():
     global _service
     if _service is None:
+        import google_auth_httplib2
+        import httplib2
+
         creds = Credentials(
             token=None,
             refresh_token=REFRESH_TOKEN,
@@ -97,8 +93,10 @@ def _get_service():
             token_uri=TOKEN_URI,
             scopes=SCOPES,
         )
+        http = google_auth_httplib2.AuthorizedHttp(
+            creds, http=httplib2.Http(timeout=HTTP_TIMEOUT_S)
+        )
         print('[Drive] building service')
-        http = google_auth_httplib2.AuthorizedHttp(creds, http=httplib2.Http(timeout=15))
         _service = build("drive", "v3", http=http, cache_discovery=False)
     return _service
 
